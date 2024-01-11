@@ -33,16 +33,19 @@ class BodyTi:
             self.vel[i] += self.acc[i] * HALF_DT
             self.pos[i] += self.vel[i] * DT
 
-        for i in range(NB_BODY):
-            for j in range(NB_BODY):
-                if i != j:
-                    DR = self.pos[j] - self.pos[i]
-                    DR2 = ti.math.dot(DR, DR)
-                    DR2 += EPS2
+        
+        #for i in range(NB_BODY):
+        #    for j in range(NB_BODY):
+        # ! only the outer loop is optimized => avoid nested for loops
+        for i, j in ti.ndrange(NB_BODY, NB_BODY):
+            if i != j:
+                DR = self.pos[j] - self.pos[i]
+                DR2 = ti.math.dot(DR, DR)
+                DR2 += EPS2
 
-                    PHI = self.mass / (ti.sqrt(DR2) * DR2)
+                PHI = self.mass / (ti.sqrt(DR2) * DR2)
 
-                    self.acc[i] += DR * PHI
+                self.acc[i] += DR * PHI
 
         for i in range(NB_BODY):
             self.vel[i] += self.acc[i] * HALF_DT
