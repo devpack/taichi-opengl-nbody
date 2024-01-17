@@ -2,156 +2,180 @@ import sys, argparse
 
 import taichi as ti
 
-# python3 main_taichi_ggui.py --arch=cpu --body=10 --fps=0
+# python3 main_taichi_ggui.py --arch=cpu --body=10 --fps=-1
 # python3 main_taichi_ggui.py --arch=vulkan --body=1024 --fps=60
-# -----------------------------------------------------------------------------------------------------------
-
-parser = argparse.ArgumentParser(description="Leapfrog N-Body")
-
-parser.add_argument('-a', '--arch', help='Taichi backend', default="cpu", action="store")
-parser.add_argument('-f', '--fps', help='Max FPS, 0 for unlimited', default=0, type=int)
-parser.add_argument('-b', '--body', help='NB Body', default=64, type=int)
-
-result = parser.parse_args()
-args = dict(result._get_kwargs())
-
-print("Args = %s" % args)
-
-if args["arch"] in ("cpu", "x64"):
-    ti.init(ti.cpu)
-elif args["arch"] in ("gpu", "cuda"):
-    ti.init(ti.gpu)
-elif args["arch"] in ("opengl",):
-    ti.init(ti.opengl)
-elif args["arch"] in ("vulkan",):
-    ti.init(ti.vulkan)
-
-NB_BODY = args["body"]
 
 # -----------------------------------------------------------------------------------------------------------
 
-SCREEN_WIDTH  = 1280
-SCREEN_HEIGHT = 800
+@ti.data_oriented
+class Body:
 
+    def __init__(self, nb_body=8):
+
+        self.nb_body = nb_body
+
+        self.pos = ti.Vector.field(3, dtype=ti.f32, shape=self.nb_body)
+        self.vel = ti.Vector.field(3, dtype=ti.f32, shape=self.nb_body)
+        self.acc = ti.Vector.field(3, dtype=ti.f32, shape=self.nb_body)
+
+        self.mass = 1.0
+
+    @ti.kernel
+    def init(self):
+        for i in range(self.nb_body):
+            self.pos[i] = [((ti.random(float) * 2) - 1) * 1.0, ((ti.random(float) * 2) - 1) * 1.0, ((ti.random(float) * 2) - 1) * 1.0]
+            self.vel[i] = [0.0, 0.0, 0.0]
+            self.acc[i] = [0.0, 0.0, 0.0]
+
+    @ti.kernel
+    def update(self, dt: ti.f32, eps: ti.f32):
+
+        for i in range(self.nb_body):
+            self.vel[i] += self.acc[i] * 0.5 * dt
+            self.pos[i] += self.vel[i] * dt
+
+        # only the outer loop is optimized 
+            
+        # For tne next for loop set the number of threads in a block on GPU
+        # ti.loop_config(block_dim=8)
+
+        # For tne next for loop set the number of threads in a block on CPU
+        #ti.loop_config(parallelize=8)
+
+        #for i, j in ti.ndrange(self.nb_body, self.nb_body): # does not work on vulkan / opengl ?
+        for i in range(self.nb_body):
+            for j in range(self.nb_body):
+                if i != j:
+                    DR = self.pos[j] - self.pos[i]
+                    DR2 = ti.math.dot(DR, DR)
+                    DR2 += eps*eps
+
+                    PHI = self.mass / (ti.sqrt(DR2) * DR2)
+
+                    self.acc[i] += DR * PHI
+
+        for i in range(self.nb_body):
+            self.vel[i] += self.acc[i] * 0.5 * dt
+            self.acc[i] = [0.0, 0.0, 0.0]  
+          
 # -----------------------------------------------------------------------------------------------------------
 
-EPS = 0.5
-DT  = 0.005
+class App:
 
-CAMERA_POS = ti.Vector([0.0, 0.0, 8.0])
+    def __init__(self, screen_width=1280, screen_height=800, max_fps=-1, camera_pos=ti.Vector([0.0, 0.0, 8.0]), nb_body=8, dt=0.005, eps=0.5):
 
-# -----------------------------------------------------------------------------------------------------------
+        # Body
+        self.nb_body = nb_body
+        self.dt = dt
+        self.eps = eps
 
-pos = ti.Vector.field(3, dtype=ti.f64, shape=NB_BODY)
-vel = ti.Vector.field(3, dtype=ti.f64, shape=NB_BODY)
-acc = ti.Vector.field(3, dtype=ti.f64, shape=NB_BODY)
-mass = 1.0
+        self.bodies = Body(nb_body=self.nb_body)
+        self.bodies.init()
 
-# -----------------------------------------------------------------------------------------------------------
+        # Window
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.camera_pos = camera_pos
+        self.max_fps = max_fps
 
-# initial distribution
-@ti.kernel
-def init_pos():
-    for i in range(NB_BODY):
-        pos[i] = [((ti.random(float) * 2) - 1) * 1.0, ((ti.random(float) * 2) - 1) * 1.0, ((ti.random(float) * 2) - 1) * 1.0]
-        vel[i] = [0.0, 0.0, 0.0]
-        acc[i] = [0.0, 0.0, 0.0]
+        self.window = ti.ui.Window("LeapFrog N-body", res=(self.screen_width, self.screen_height), fps_limit=self.max_fps, vsync=0)
 
-# -----------------------------------------------------------------------------------------------------------
+        self.canvas = self.window.get_canvas()
+        self.scene = self.window.get_scene()
 
-# Leapfrog integration
-@ti.kernel
-def update_pos(dt: ti.f64, eps: ti.f64):
+        self.camera = ti.ui.Camera()
+        self.camera.position(self.camera_pos.x, self.camera_pos.y, self.camera_pos.z)
+        self.camera.lookat(0.0, 0.0, 0.0)
+        self.camera.up(0, 1, 0)
+        self.camera.projection_mode(ti.ui.ProjectionMode.Perspective)
+        self.scene.set_camera(self.camera)
 
-    for i in range(NB_BODY):
-        vel[i] += acc[i] * 0.5 * dt
-        pos[i] += vel[i] * dt
+        self.canvas.set_background_color((0.1, 0.1, 0.1))
+        
+        self.cam_moved = False
 
-    # ! only the outer loop is optimized 
-    #for i, j in ti.ndrange(NB_BODY, NB_BODY): # does not work on vulkan / opengl ?
-    for i in range(NB_BODY):
-        for j in range(NB_BODY):
-            if i != j:
-                DR = pos[j] - pos[i]
-                DR2 = ti.math.dot(DR, DR)
-                DR2 += eps*eps
+    def show_options(self):
+        self.window.GUI.begin("Options", 0.05, 0.1, 0.2, 0.15)
+        self.dt = self.window.GUI.slider_float("dt", self.dt, minimum=0.0, maximum=0.1)
+        self.eps = self.window.GUI.slider_float("eps", self.eps, minimum=0.01, maximum=1.0)
+        self.window.GUI.end()
 
-                PHI = mass / (ti.sqrt(DR2) * DR2)
+    def run(self):
 
-                acc[i] += DR * PHI
+        # drawing loop
+        while self.window.running:
 
-    for i in range(NB_BODY):
-        vel[i] += acc[i] * 0.5 * dt
-        acc[i] = [0.0, 0.0, 0.0]  
+            self.camera.track_user_inputs(self.window, movement_speed=1.0, hold_key=ti.ui.RMB)
 
-# -----------------------------------------------------------------------------------------------------------
+            for e in self.window.get_events(ti.ui.PRESS):
+                if e.key in [ti.ui.ESCAPE]:
+                    exit()
+                if e.key in [ti.ui.DOWN]:
+                    self.camera_pos.z += 1.001
+                    self.cam_moved = True
+                if e.key in [ti.ui.UP]:
+                    self.camera_pos.z -= 1.001
+                    self.cam_moved = True
 
-def show_options(window):
-    global DT, EPS
+            if self.cam_moved:
+                self.camera.position(self.camera_pos.x, self.camera_pos.y, self.camera_pos.z)
+                self.camera.lookat(0.0, 0.0, 0.0)
+                self.cam_moved = False
 
-    window.GUI.begin("Options", 0.05, 0.1, 0.2, 0.15)
-    DT = window.GUI.slider_float("dt", DT, minimum=0.0, maximum=0.1)
-    EPS = window.GUI.slider_float("eps", EPS, minimum=0.01, maximum=1.0)
-    window.GUI.end()
+            self.scene.set_camera(self.camera)
+
+            self.bodies.update(self.dt, self.eps)
+            #ti.profiler.print_kernel_profiler_info()
+
+            self.scene.ambient_light((0.8, 0.8, 0.8))
+            self.scene.point_light(pos=(0.5, 1.5, 1.5), color=(1, 1, 1))
+            
+            self.scene.particles(self.bodies.pos, radius=0.01, color=(1.0, 1.0, 1.0))
+
+            self.canvas.scene(self.scene)
+                        
+            self.show_options()
+            self.window.show()
+
+        self.window.destroy()
 
 # -----------------------------------------------------------------------------------------------------------
 
 def main():
 
-    init_pos()
+    # const
+    USE_PROFILER  = 0
 
-    window = ti.ui.Window("LeapFrog N-body", res=(SCREEN_WIDTH, SCREEN_HEIGHT), fps_limit=-1, vsync=0)
-    canvas = window.get_canvas()
+    SCREEN_WIDTH  = 1280
+    SCREEN_HEIGHT = 800
+    CAMERA_POS = ti.Vector([0.0, 0.0, 8.0])
 
-    scene = window.get_scene()
+    # args
+    parser = argparse.ArgumentParser(description="Leapfrog N-Body")
 
-    camera = ti.ui.Camera()
-    camera.position(CAMERA_POS.x, CAMERA_POS.y, CAMERA_POS.z)
-    camera.lookat(0.0, 0.0, 0.0)
-    camera.up(0, 1, 0)
-    camera.projection_mode(ti.ui.ProjectionMode.Perspective)
-    scene.set_camera(camera)
+    parser.add_argument('-a', '--arch', help='Taichi backend', default="cpu", action="store")
+    parser.add_argument('-f', '--fps', help='Max FPS, -1 for unlimited', default=-1, type=int)
+    parser.add_argument('-b', '--body', help='NB Body', default=64, type=int)
 
-    canvas.set_background_color((0.1, 0.1, 0.1))
-    
-    cam_moved = False
+    result = parser.parse_args()
+    args = dict(result._get_kwargs())
 
-    # drawing loop
-    while window.running:
+    print("Args = %s" % args)
 
-        camera.track_user_inputs(window, movement_speed=1.0, hold_key=ti.ui.RMB)
+    if args["arch"] in ("cpu", "x64"):
+        ti.init(ti.cpu, debug=0, default_ip=ti.i32, default_fp=ti.f32, kernel_profiler=USE_PROFILER)
 
-        for e in window.get_events(ti.ui.PRESS):
-            if e.key in [ti.ui.ESCAPE]:
-                exit()
-            if e.key in [ti.ui.DOWN]:
-                CAMERA_POS.z += 1.001
-                cam_moved = True
-            if e.key in [ti.ui.UP]:
-                CAMERA_POS.z -= 1.001
-                cam_moved = True
+    elif args["arch"] in ("gpu", "cuda"):
+        ti.init(ti.gpu, kernel_profiler=USE_PROFILER)
+    elif args["arch"] in ("opengl",):
+        ti.init(ti.opengl)
+    elif args["arch"] in ("vulkan",):
+        ti.init(ti.vulkan)
 
-        if cam_moved:
-            camera.position(CAMERA_POS.x, CAMERA_POS.y, CAMERA_POS.z)
-            camera.lookat(0.0, 0.0, 0.0)
-            cam_moved = False
-
-        scene.set_camera(camera)
-
-        update_pos(DT, EPS)
-
-        scene.ambient_light((0.8, 0.8, 0.8))
-        scene.point_light(pos=(0.5, 1.5, 1.5), color=(1, 1, 1))
-        
-        scene.particles(pos, radius=0.01, color=(1.0, 1.0, 1.0))
-        #canvas.circles(pos, radius=0.001, color=(1, 1, 1))
-
-        canvas.scene(scene)
-        show_options(window)
-
-        window.show()
-
-    window.destroy()
+    # App
+    app = App(screen_width=SCREEN_WIDTH, screen_height=SCREEN_HEIGHT, max_fps=args["fps"], camera_pos=CAMERA_POS, 
+              nb_body=args["body"], dt=0.005, eps=0.5)
+    app.run()
 
 if __name__ == "__main__":
     main()
