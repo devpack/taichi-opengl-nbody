@@ -90,7 +90,7 @@ class App:
         self.camera.projection_mode(ti.ui.ProjectionMode.Perspective)
         self.scene.set_camera(self.camera)
 
-        self.canvas.set_background_color((0.1, 0.1, 0.1))
+        #self.canvas.set_background_color((0.1, 0.1, 0.1))
         
         self.cam_moved = False
 
@@ -155,7 +155,7 @@ def main():
 
     parser.add_argument('-a', '--arch', help='Taichi backend', default="cpu", action="store")
     parser.add_argument('-f', '--fps', help='Max FPS, -1 for unlimited', default=-1, type=int)
-    parser.add_argument('-b', '--body', help='NB Body', default=64, type=int)
+    parser.add_argument('-b', '--body', help='NB Body', default=32, type=int)
 
     result = parser.parse_args()
     args = dict(result._get_kwargs())

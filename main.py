@@ -1,6 +1,9 @@
 import sys, argparse
 
 import pygame as pg
+
+import imgui
+import my_imgui.pygame_imgui as pygame_imgui
 import numpy as np
 import moderngl as mgl
 import glm
@@ -17,20 +20,20 @@ import taichi as ti
 
 class App:
 
-    def __init__(self, screen_width=SCREEN_WIDTH, screen_height=SCREEN_HEIGHT, max_fps=0):
+    def __init__(self, screen_width=1280, screen_height=800, hide_options=True, max_fps=0, nb_body=8, dt=0.005, eps=0.5):
+
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.max_fps = max_fps
+        self.hide_options = hide_options
 
-        #
-        print("NB_BODY=", NB_BODY)
+        self.nb_body = nb_body
 
         #
         self.lastTime = time.time()
         self.currentTime = time.time()
 
-        self.fps = FPSCounter()
-
+        self.fps  = FPSCounter()
         self.mode = MODE
         
         # pygame init
@@ -41,6 +44,16 @@ class App:
         pg.display.gl_set_attribute(pg.GL_CONTEXT_PROFILE_MASK, pg.GL_CONTEXT_PROFILE_CORE)
 
         pg.display.set_mode((self.screen_width, self.screen_height), flags=pg.OPENGL | pg.HWSURFACE | pg.DOUBLEBUF) # | pg.FULLSCREEN)
+        #pg.display.set_mode((self.screen_width, self.screen_height), flags=pg.OPENGL | pg.DOUBLEBUF | pg.RESIZABLE) # | pg.FULLSCREEN)
+
+        # IMGUI
+        if not self.hide_options:
+            imgui.create_context()
+            self.imgui_renderer = pygame_imgui.PygameRenderer()
+            imgui.get_io().display_size = self.screen_width, self.screen_height
+
+        self.eps = eps
+        self.dt = dt
 
         # camera control: keys + mouse
         pg.event.set_grab(GRAB_MOUSE)
@@ -71,9 +84,7 @@ class App:
 
         # time objects
         self.clock = pg.time.Clock()
-        self.time = 0
-        self.delta_time = 0
-        self.num_frames = 0
+        self.time, self.delta_time, self.num_frames = 0, 0, 0
 
         # light
         self.light = Light(position=LIGHT_POS)
@@ -87,8 +98,8 @@ class App:
         # scene object
         self.scene = []
 
-        self.bodies = Bodies(self, self.nbody_program)
-        self.scene.append(self.bodies)
+        self.sim = Simulation(self, self.nbody_program)
+        self.scene.append(self.sim)
 
         self.ctx.clear(color = (0.0, 0.0, 0.0))
 
@@ -167,6 +178,9 @@ class App:
                 mouse_position = pg.mouse.get_pos()
                 self.mouse_pos(mouse_position[0], mouse_position[1])
 
+            if not self.hide_options:
+                self.imgui_renderer.process_event(event)
+
         # mouse camera control
         if self.mouse_button_down:
             mx, my = pg.mouse.get_pos()
@@ -208,6 +222,15 @@ class App:
     def set_time(self):
         self.time = pg.time.get_ticks() * 0.001
 
+    def show_options_ui(self):
+        imgui.new_frame()
+        imgui.begin("Options", True)
+
+        _, self.dt  = imgui.slider_float("dt", self.dt, 0.001, 1.0)
+        _, self.eps = imgui.slider_float("eps", self.eps, 0.01, 1.0)
+
+        imgui.end()
+
     def run(self):
 
         while True:
@@ -217,6 +240,7 @@ class App:
             # pygame events
             self.check_events()
 
+            #
             self.camera.update(self.mouse_dx, self.mouse_dy, self.forward, self.backward, self.left, self.right, self.up, self.down)
 
             if CLEAR_ON:
@@ -226,19 +250,33 @@ class App:
                 obj.update()
                 obj.render()
 
+            # imgui
+            if not self.hide_options:
+                self.show_options_ui()
+                imgui.render()
+                self.imgui_renderer.render(imgui.get_draw_data())
+
+            # show
             pg.display.flip()
 
-
+            # fps
             self.delta_time = self.clock.tick(self.max_fps)
             self.get_fps()
             self.num_frames += 1
 
 # -----------------------------------------------------------------------------------------------------------
-
+# python3 main.py --arch=cpu --body=32 --fps=-1
+# python3 main.py --arch=cpu --body=32 --fps=-1 -ho
+            
 parser = argparse.ArgumentParser(description="")
+
+parser.add_argument('-ww', '--width', help='width', default=1280, type=int)
+parser.add_argument('-hh', '--height', help='width', default=800, type=int)
 
 parser.add_argument('-a', '--arch', help='Taichi backend', default="cpu", action="store")
 parser.add_argument('-f', '--fps', help='Max FPS, 0 for unlimited', default=0, type=int)
+parser.add_argument('-b', '--body', help='NB Body', default=32, type=int)
+parser.add_argument('-ho', '--hide_options', help='Options UI', default=False, action="store_true")
 
 result = parser.parse_args()
 args = dict(result._get_kwargs())
@@ -246,7 +284,8 @@ args = dict(result._get_kwargs())
 print("Args = %s" % args)
 
 if args["arch"] in ("cpu", "x64"):
-    ti.init(ti.cpu)
+    ti.init(ti.cpu, debug=0, default_ip=ti.i32, default_fp=ti.f32)
+
 elif args["arch"] in ("gpu", "cuda"):
     ti.init(ti.gpu)
 elif args["arch"] in ("opengl",):
@@ -257,6 +296,6 @@ elif args["arch"] in ("vulkan",):
 # -----------------------------------------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    app = App(max_fps=args["fps"])
+    app = App(screen_width=args["width"], screen_height=args["height"], max_fps=args["fps"], hide_options=args["hide_options"], nb_body=args["body"], dt=0.005, eps=0.5)
     app.run()
 
