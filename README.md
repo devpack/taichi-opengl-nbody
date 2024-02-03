@@ -1,5 +1,9 @@
 # taichi-opengl-nbody
 
+- Requirements:
+
+python3 -m pip install taichi pygame ModernGL PyGLM PyOpenGL imgui
+ 
 - pygame + modergl rendering backend:
 
 python3 main.py --arch=cpu --fps=60
